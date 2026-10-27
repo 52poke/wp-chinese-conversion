@@ -1,5 +1,10 @@
 <?php
-class Wpcc_Admin {
+
+declare(strict_types=1);
+
+namespace Wpcc;
+
+class AdminPage {
 	public $base = '';
 	public $is_submitted = false;
 	public $is_success = false;
@@ -11,23 +16,13 @@ class Wpcc_Admin {
 	public $admin_lang = false;
 
 	public function __construct() {
-		$wpcc_options = \Wpcc\State::options();
-		$wpcc_langs = \Wpcc\State::langs();
+		$wpcc_options = \Wpcc\Config::options();
+		$wpcc_langs = \Wpcc\Config::langs();
 		$locale = str_replace('_', '-', strtolower(get_locale()));
-		if (empty($wpcc_options)) {
-			$wpcc_options = get_option('wpcc_options');
-		}
-		if (!is_array($wpcc_options)) {
-			$wpcc_options = wpcc_normalize_options(array());
-			update_option('wpcc_options', $wpcc_options);
-		} else {
-			$wpcc_options = wpcc_normalize_options($wpcc_options);
-		}
-		\Wpcc\State::setOptions($wpcc_options);
 		$this->langs = $wpcc_langs;
 		$this->options = $wpcc_options;
 
-		$variant = !empty($_GET['variant']) ? sanitize_key(wp_unslash($_GET['variant'])) : '';
+		$variant = sanitize_key(\Wpcc\RequestService::request_string($_GET, 'variant'));
 		if( $variant && in_array($variant, array_keys($this->langs), true) )
 			$this->admin_lang = $variant;
 		else if( in_array($locale, array_keys($this->langs), true) )
@@ -35,12 +30,9 @@ class Wpcc_Admin {
 		$plugin_file = dirname(__DIR__) . '/wp-chinese-conversion.php';
 		$this->base = str_replace(basename($plugin_file), "", plugin_basename($plugin_file));
 		$this->url = admin_url('options-general.php?page=' . $this->base . 'wp-chinese-conversion.php');
-		add_filter('plugin_action_links', array($this, 'action_links'), 10, 2);
 		if (function_exists('add_options_page')) {
 			add_options_page('WP Chinese Conversion', 'Chinese Conversion', 'manage_options', $this->base . 'wp-chinese-conversion.php', array($this, 'display_options'));
 		}
-
-		wp_enqueue_script('jquery');
 	}
 
 	public function action_links($links, $file) {
@@ -51,11 +43,14 @@ class Wpcc_Admin {
 
 	public function display_options() {
 		global $wp_rewrite;
+		if (!current_user_can('manage_options')) {
+			wp_die('You are not allowed to manage these settings.');
+		}
 
 		if( !empty($_POST['wpcco_uninstall_confirm']) ) {
 			check_admin_referer('wpcc_uninstall', 'wpcc_uninstall_nonce');
 			delete_option('wpcc_options');
-			flush_rewrite_rules();
+			\Wpcc\Plugin::deactivate();
 			echo '<div class="wrap"><h2>WP Chinese Conversion Setting</h2><div class="updated">Uninstall Successfully. 卸载成功, 現在您可以到<a href="plugins.php">插件菜单</a>里禁用本插件.</div></div>';
 			return;
 		} else if($this->options === false) {
@@ -99,7 +94,7 @@ class Wpcc_Admin {
 <tr>
 <td valign="top" width="30%"><a title="单击查看帮助" style="cursor: pointer;" onclick="toggleVisibility('wpcc_help_nt');">自定义"不转换"标签名: </a></td>
 <td><!--WPCC_NC_START-->
-<input type="text" style="width: 100px;" name="wpcco_no_conversion_tip" id="wpcco_no_conversion_tip" value="<?php echo esc_html($this->options['nctip']); ?>" /><!--WPCC_NC_END-->
+<input type="text" style="width: 100px;" name="wpcco_no_conversion_tip" id="wpcco_no_conversion_tip" value="<?php echo esc_attr($this->options['nctip']); ?>" /><!--WPCC_NC_END-->
 <div id="wpcc_help_nt" style="display: none;">本插件输出的widget中将包含当前页面原始版本链接, 你可以在这里自定义其显示的名称. 如果留空则使用默认的"不转换".</div>
 </td>
 </tr>
@@ -110,7 +105,7 @@ class Wpcc_Admin {
 <?php foreach ($this->langs as $key => $value) { ?>
 	<input type="checkbox" id="wpcco_variant_<?php echo $key; ?>" name="wpcco_variant_<?php echo $key; ?>"<?php echo in_array($key, $this->options['wpcc_used_langs']) ? ' checked="checked"' : ''; ?> />
 	<label for="wpcco_variant_<?php echo $key; ?>"><?php $str = $value[2] . ' (' . $key . ')'; $str_len = function_exists('mb_strlen') ? mb_strlen($str) : strlen($str); echo str_replace(' ', '&nbsp;', str_pad($str, 14 + strlen($str) - $str_len));?></label>
-	<input type="text" style="width: 100px;" name="<?php echo $this->langs[$key][1]; ?>" value="<?php echo !empty($this->options[$value[1]]) ? esc_html($this->options[$value[1]]) : ''; ?>" /><br />
+	<input type="text" style="width: 100px;" name="<?php echo $this->langs[$key][1]; ?>" value="<?php echo !empty($this->options[$value[1]]) ? esc_attr($this->options[$value[1]]) : ''; ?>" /><br />
 <?php } ?><!--WPCC_NC_END-->
 <div id="wpcc_help_uls" style="display: none;">未选中的中文语言将不被使用,此项设置为全局设置.您应该选中至少一种中文语言,否则本插件全部功能都不会工作.
 在每个复选框后的文本输入框里可以输入该语言自定义名称, 如果留空会使用默认值. <!--WPCC_NC_START-->("简体中文", "繁體中文"...)<!--WPCC_NC_END--></div>
@@ -153,7 +148,7 @@ class Wpcc_Admin {
 
 <tr><td valign="top" width="30%"><a title="单击查看帮助" style="cursor: pointer;" onclick="toggleVisibility('wpcc_help_co');">使用Cookie保存并识别用户语言偏好:</a></td>
 <td>
-<select id="wpcco_use_cookie_variant" value="" name="wpcco_use_cookie_variant" style="width: 250px;">';
+<select id="wpcco_use_cookie_variant" value="" name="wpcco_use_cookie_variant" style="width: 250px;">
 <option value="2"<?php echo $this->options['wpcc_use_cookie_variant'] == 2 ? ' selected="selected"' : ''; ?>>直接显示对应繁简版本内容</option>
 <option value="1"<?php echo $this->options['wpcc_use_cookie_variant'] == 1 ? ' selected="selected"' : ''; ?>>跳转到对应繁简版本页面</option>
 <option value="0"<?php echo $this->options['wpcc_use_cookie_variant'] == 0 ? ' selected="selected"' : ''; ?>>关闭此功能(默认值)</option>
@@ -204,9 +199,9 @@ HTML中所有位于 <code>&lt;!--WPCC_NC_START--&gt;</code> 和 <code>&lt;!--WPC
 
 <tr>
 <td valign="top" width="30%"><a title="单击查看帮助" style="cursor: pointer;" onclick="toggleVisibility('wpcc_help_pl');">繁简转换页面永久链接格式:</a></td><td>
-<label><input type="radio" name="wpcco_use_permalink" value="0"<?php echo $this->options['wpcc_use_permalink'] == 0 ? ' checked="checked"' : ''; ?> /> <code><?php echo home_url('') . (empty($wp_rewrite->permalink_structure) ? '/?p=123&variant=zh-hant' : $wp_rewrite->permalink_structure . '?variant=zh-hant'); ?></code> (默认)</label><br />
-<label><input type="radio" name="wpcco_use_permalink" value="1"<?php echo empty($wp_rewrite->permalink_structure) ? ' disabled="disabled"' : ''; ?><?php echo $this->options['wpcc_use_permalink'] == 1 ? ' checked="checked"' : ''; ?> /> <code><?php echo home_url('') . user_trailingslashit(trailingslashit($wp_rewrite->permalink_structure) . 'zh-hant') . ( empty($wp_rewrite->permalink_structure) ? '/' : '' ); ?></code></label><br />
-<label><input type="radio" name="wpcco_use_permalink" value="2"<?php echo empty($wp_rewrite->permalink_structure) ? ' disabled="disabled"' : ''; ?><?php echo $this->options['wpcc_use_permalink'] == 2 ? ' checked="checked"' : ''; ?> /> <code><?php echo home_url('') . '/zh-hant' . $wp_rewrite->permalink_structure . ( empty($wp_rewrite->permalink_structure) ? '/' : '' ); ?></code></label><br />
+<label><input type="radio" name="wpcco_use_permalink" value="0"<?php echo $this->options['wpcc_use_permalink'] == 0 ? ' checked="checked"' : ''; ?> /> <code><?php echo esc_html(home_url('') . (empty($wp_rewrite->permalink_structure) ? '/?p=123&variant=zh-hant' : $wp_rewrite->permalink_structure . '?variant=zh-hant')); ?></code> (默认)</label><br />
+<label><input type="radio" name="wpcco_use_permalink" value="1"<?php echo empty($wp_rewrite->permalink_structure) ? ' disabled="disabled"' : ''; ?><?php echo $this->options['wpcc_use_permalink'] == 1 ? ' checked="checked"' : ''; ?> /> <code><?php echo esc_html(home_url('') . user_trailingslashit(trailingslashit($wp_rewrite->permalink_structure) . 'zh-hant') . ( empty($wp_rewrite->permalink_structure) ? '/' : '' )); ?></code></label><br />
+<label><input type="radio" name="wpcco_use_permalink" value="2"<?php echo empty($wp_rewrite->permalink_structure) ? ' disabled="disabled"' : ''; ?><?php echo $this->options['wpcc_use_permalink'] == 2 ? ' checked="checked"' : ''; ?> /> <code><?php echo esc_html(home_url('') . '/zh-hant' . $wp_rewrite->permalink_structure . ( empty($wp_rewrite->permalink_structure) ? '/' : '' )); ?></code></label><br />
 <div id="wpcc_help_pl" style="display: none;">更改此项设置前,<b>请仔细阅读下面的说明:</b><br />本项设置决定插件生成的繁简转换页面Permalink.
 默认的形式为您原始Permalink后加上?variant=zh-hant参数.(zh-hant为当前请求的语言代码) .你可以修改这个permalink形式.本插件提供两种非默认的Permalink格式:
 您原始的Permalink后加上/zh-hant 或/zh-hant/; 或/zh-hant后加上您原来Permalink. 两种区别在于中文语言代码(zh-hant)附加在您原来Permalink的末尾或开头.
@@ -256,7 +251,7 @@ URL末尾是否有 / 取决于您的Wordpress永久链接末尾是否有/. 但<b
 	}
 
 	public function navi() {
-		$variant = !empty($_GET['variant']) ? sanitize_key(wp_unslash($_GET['variant'])) : '';
+		$variant = sanitize_key(\Wpcc\RequestService::request_string($_GET, 'variant'));
 		$str = '<span><a title="默认/ 默認" href="' . esc_url($this->url) . '" ' . ( !$variant ? 'style="color: #464646; text-decoration: none !important;"' : '' ) . ' >默认/ 默認</a></span>&nbsp;';
 		if(!$this->options['wpcc_used_langs']) return $str;
 			foreach ($this->langs as $key => $value) {
@@ -267,7 +262,10 @@ URL末尾是否有 / 取决于您的Wordpress永久链接末尾是否有/. 但<b
 
 	public function process() {
 		global $wp_rewrite;
-		$post = wp_unslash($_POST);
+		if (!current_user_can('manage_options')) {
+			return;
+		}
+		$post = array_filter(wp_unslash($_POST), 'is_string');
 		$langs = array();
 		foreach ($this->langs as $key => $value) {
 			if(isset($post[ 'wpcco_variant_' . $key ]))
@@ -280,7 +278,7 @@ URL末尾是否有 / 取决于您的Wordpress永久链接末尾是否有/. 但<b
 			'wpcc_use_cookie_variant' => isset($post['wpcco_use_cookie_variant']) ? intval($post['wpcco_use_cookie_variant']) : 0,
 			'wpcc_use_fullpage_conversion' => ( isset($post['wpcco_use_fullpage_conversion']) ? 1 : 0 ),
 			'wpcc_use_permalink' => isset($post['wpcco_use_permalink']) ? intval($post['wpcco_use_permalink']) : 0,
-			'wpcc_auto_language_recong' => 0,
+			'wpcc_auto_language_recong' => $this->options['wpcc_auto_language_recong'],
 			'wpcc_no_conversion_tag' => trim(sanitize_text_field(isset($post['wpcco_no_conversion_tag']) ? $post['wpcco_no_conversion_tag'] : ''), " \t\n\r\0\x0B,|"),
 			'wpcc_no_conversion_ja' => ( isset($post['wpcco_no_conversion_ja']) ? 1 : 0 ),
 			'wpcc_no_conversion_qtag' => ( isset($post['wpcco_no_conversion_qtag']) ? 1 : 0 ),
@@ -292,17 +290,18 @@ URL末尾是否有 / 取决于您的Wordpress永久链接末尾是否有/. 但<b
 				$options[$value[1]] = trim(sanitize_text_field($post[$value[1]]));
 		}
 
+		if (empty($wp_rewrite->permalink_structure)) {
+			$options['wpcc_use_permalink'] = 0;
+		}
 		$options = wpcc_normalize_options($options);
-		\Wpcc\State::setOptions($options);
+		update_option('wpcc_options', $options);
+		\Wpcc\Config::setOptions($options);
 		if( $this->options['wpcc_use_permalink'] != $options['wpcc_use_permalink'] ||
 			( $this->options['wpcc_use_permalink'] != 0 && $this->options['wpcc_used_langs'] != $options['wpcc_used_langs'] )
 		) {
-			if( !has_filter('rewrite_rules_array', 'wpcc_rewrite_rules') )
-				add_filter('rewrite_rules_array', 'wpcc_rewrite_rules');
-			$wp_rewrite->flush_rules();
+			add_filter('rewrite_rules_array', array(\Wpcc\LinkService::class, 'rewrite_rules'));
+			flush_rewrite_rules(false);
 		}
-
-		update_option('wpcc_options', $options);
 
 		$this->options=$options;
 		$this->is_success = true;
@@ -310,3 +309,5 @@ URL末尾是否有 / 取决于您的Wordpress永久链接末尾是否有/. 但<b
 	}
 
 }
+
+class_alias(AdminPage::class, 'Wpcc_Admin');

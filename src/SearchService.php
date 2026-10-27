@@ -6,58 +6,45 @@ namespace Wpcc;
 
 class SearchService {
 	public static function apply_filter_search_rule(): void {
-		add_filter('posts_where', 'wpcc_filter_search_rule', 100);
-		add_filter('posts_distinct', function($s) {
-			return 'DISTINCT';
-		});
+		add_filter('posts_search', array(self::class, 'filter_search_rule'), 20, 2);
 	}
 
-	public static function filter_search_rule(string $where): string {
-		global $wp_query, $wpdb;
-		if (empty($wp_query->query_vars['s'])) {
-			return $where;
+	public static function filter_search_rule(string $search, $query = null): string {
+		global $wpdb;
+		if ($query === null) {
+			global $wp_query;
+			$query = $wp_query;
 		}
-		if (!preg_match("/^([" . chr(228) . "-" . chr(233) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}){1}/", $wp_query->query_vars['s']) &&
-			!preg_match("/([" . chr(228) . "-" . chr(233) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}){1}$/", $wp_query->query_vars['s']) &&
-			!preg_match("/([" . chr(228) . "-" . chr(233) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}[" . chr(128) . "-" . chr(191) . "]{1}){2,}/", $wp_query->query_vars['s'])) {
-			return $where;
+		if (!$query || $search === '' || empty($query->query_vars['search_terms'])) {
+			return $search;
 		}
-
-		wpcc_load_conversion_table();
-
-		$sql = '';
-		$and1 = '';
-		$original = '';
-		foreach ((array) $wp_query->query_vars['search_terms'] as $value) {
-			$raw_value = wp_unslash($value);
-			$like = '%' . $wpdb->esc_like($raw_value) . '%';
-			$original .= "{$and1}(" . $wpdb->prepare(
-				"($wpdb->posts.post_title LIKE %s) OR ($wpdb->posts.post_excerpt LIKE %s) OR ($wpdb->posts.post_content LIKE %s)",
-				$like,
-				$like,
-				$like
-			) . ')';
-			$valuea = zhconversion_all($raw_value);
-			$valuea[] = $raw_value;
-			$sql .= "{$and1}( ";
-			$or2 = '';
-			foreach ($valuea as $v) {
-				$like_variant = '%' . $wpdb->esc_like($v) . '%';
-				$sql .= "{$or2}(" . $wpdb->prepare(
-					"$wpdb->posts.post_title LIKE %s OR $wpdb->posts.post_content LIKE %s OR $wpdb->posts.post_excerpt LIKE %s",
-					$like_variant,
-					$like_variant,
-					$like_variant
-				) . ')';
-				$or2 = ' OR ';
+		$wildcard = empty($query->query_vars['exact']) ? '%' : '';
+		$exclusion = apply_filters('wp_query_search_exclusion_prefix', '-');
+		$replacements = array();
+		foreach ($query->query_vars['search_terms'] as $term) {
+			if (!is_string($term) || !preg_match('/\p{Han}/u', $term)) {
+				continue;
 			}
-			$sql .= ' ) ';
-			$and1 = ' AND ';
+			$exclude = $exclusion && str_starts_with($term, $exclusion);
+			if ($exclude) {
+				$term = substr($term, strlen($exclusion));
+			}
+			$variants = ConversionService::zhconversion_all($term);
+			if (!$variants) {
+				continue;
+			}
+			array_unshift($variants, $term);
+			$operator = $exclude ? 'NOT LIKE' : 'LIKE';
+			$join = $exclude ? ' AND ' : ' OR ';
+			foreach (array("$wpdb->posts.post_title", "$wpdb->posts.post_excerpt", "$wpdb->posts.post_content", 'sq1.meta_value') as $column) {
+				$original = $wpdb->prepare("($column $operator %s)", $wildcard . $wpdb->esc_like($term) . $wildcard);
+				$parts = array();
+				foreach ($variants as $variant) {
+					$parts[] = $wpdb->prepare("($column $operator %s)", $wildcard . $wpdb->esc_like($variant) . $wildcard);
+				}
+				$replacements[$original] = '(' . implode($join, $parts) . ')';
+			}
 		}
-
-		if (empty($sql)) {
-			return $where;
-		}
-		return preg_replace('/' . preg_quote($original, '/') . '/', $sql, $where, 1);
+		return strtr($search, $replacements);
 	}
 }

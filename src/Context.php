@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Wpcc;
 
 class Context {
-	private static $noconversionUrl = false;
-	private static $redirectTo = false;
-	private static $directConversionFlag = false;
-	private static $langsUrls = array();
-	private static $targetLang = false;
+	private static string|false $noconversionUrl = false;
+	private static string|false $redirectTo = false;
+	private static bool $directConversionFlag = false;
+	private static array $langsUrls = array();
+	private static string|false $targetLang = false;
 
 	public static function initDefaults(): void {
 		self::$noconversionUrl = false;
@@ -19,15 +19,15 @@ class Context {
 		self::$targetLang = false;
 	}
 
-	public static function targetLang() {
+	public static function targetLang(): string|false {
 		return self::$targetLang;
 	}
 
 	public static function setTargetLang($lang): void {
-		self::$targetLang = $lang;
+		self::$targetLang = is_string($lang) && isset(Config::langs()[$lang]) ? $lang : false;
 	}
 
-	public static function noconversionUrl() {
+	public static function noconversionUrl(): string|false {
 		return self::$noconversionUrl;
 	}
 
@@ -35,20 +35,20 @@ class Context {
 		self::$noconversionUrl = $url;
 	}
 
-	public static function redirectTo() {
+	public static function redirectTo(): string|false {
 		return self::$redirectTo;
 	}
 
 	public static function setRedirectTo($value): void {
-		self::$redirectTo = $value;
+		self::$redirectTo = is_string($value) && isset(Config::langs()[$value]) ? $value : false;
 	}
 
-	public static function directConversionFlag() {
+	public static function directConversionFlag(): bool {
 		return self::$directConversionFlag;
 	}
 
 	public static function setDirectConversionFlag($value): void {
-		self::$directConversionFlag = $value;
+		self::$directConversionFlag = (bool) $value;
 	}
 
 	public static function langsUrls(): array {

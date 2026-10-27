@@ -5,67 +5,100 @@ declare(strict_types=1);
 namespace Wpcc;
 
 class LinkService {
+	private static function is_internal(string $link): bool {
+		if ($link === '' || str_starts_with($link, '#')) {
+			return false;
+		}
+		$home = wp_parse_url(home_url('/'));
+		$url = wp_parse_url($link);
+		if ($url === false || isset($url['user']) || isset($url['pass'])) {
+			return false;
+		}
+		if (isset($url['scheme']) && !in_array(strtolower($url['scheme']), array('http', 'https'), true)) {
+			return false;
+		}
+		if (isset($url['host']) && (strcasecmp($url['host'], $home['host']) !== 0 || ($url['port'] ?? null) !== ($home['port'] ?? null))) {
+			return false;
+		}
+		if (!isset($url['host']) && isset($url['path']) && !str_starts_with($url['path'], '/')) {
+			return false;
+		}
+		$path = $url['path'] ?? '/';
+		$base = rtrim($home['path'] ?? '', '/');
+		return $base === '' || $path === $base || str_starts_with($path, $base . '/');
+	}
+
 	public static function link_conversion($link, $variant = null) {
-		$options = State::options();
-
-		static $wpcc_wp_homepath;
-		if (empty($wpcc_wp_homepath)) {
-			$home_path = wp_parse_url(home_url('/'), PHP_URL_PATH);
-			$wpcc_wp_homepath = trailingslashit($home_path ? $home_path : '/');
-		}
-
-		if ($variant === null) {
-			$variant = Context::targetLang();
-		}
-		if ($variant === false || $variant === null) {
+		$variant ??= Context::targetLang();
+		if (!is_string($variant) || !preg_match('/^(?:' . Config::get_variant_regex() . ')$/D', $variant) || !self::is_internal((string) $link)) {
 			return $link;
 		}
-
-		if (strpos($link, '?') !== false || empty($options['wpcc_use_permalink'])) {
+		$link = self::strip_variant((string) $link);
+		$options = Config::options();
+		if (str_contains($link, '?') || empty($options['wpcc_use_permalink'])) {
 			return add_query_arg('variant', $variant, $link);
 		}
-		if ($options['wpcc_use_permalink'] == 1) {
-			return user_trailingslashit(trailingslashit($link) . $variant);
+		$fragment = '';
+		if (str_contains($link, '#')) {
+			[$link, $fragment] = explode('#', $link, 2);
+			$fragment = '#' . $fragment;
 		}
-		return preg_replace('#^(http(s?)://[^/]+' . $wpcc_wp_homepath . ')#', '\\1' . $variant . '/', $link);
+		$path = wp_parse_url($link, PHP_URL_PATH) ?: '/';
+		$base = rtrim(wp_parse_url(home_url('/'), PHP_URL_PATH) ?: '', '/');
+		$is_home = rtrim($path, '/') === $base;
+		if ($options['wpcc_use_permalink'] === 1 || $is_home) {
+			$link = user_trailingslashit(trailingslashit($link) . $variant);
+			return ($is_home ? trailingslashit($link) : $link) . $fragment;
+		}
+		$prefix = substr($link, 0, strlen($link) - strlen($path));
+		$path = $base . '/' . $variant . '/' . ltrim(substr($path, strlen($base)), '/');
+		return $prefix . $path . $fragment;
 	}
 
 	public static function link_conversion_auto($link, $variant = null) {
-		$options = State::options();
-		$target_lang = Context::targetLang();
-		$direct_flag = Context::directConversionFlag();
-
-		if ($link == home_url('')) {
-			$link .= '/';
-		}
-		if (!$target_lang || $direct_flag) {
+		if (!Context::targetLang() || Context::directConversionFlag()) {
 			return $link;
-		}
-		if ($link == home_url('/') && !empty($options['wpcc_use_permalink'])) {
-			return trailingslashit(self::link_conversion($link, $variant));
 		}
 		return self::link_conversion($link, $variant);
 	}
 
-	public static function get_noconversion_url() {
-		$options = State::options();
-		$reg = implode('|', $options['wpcc_used_langs']);
-		$request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '';
-		$tmp = home_url($request_uri);
-		$tmp = trim(strtolower(remove_query_arg('variant', $tmp)));
-
-		if (preg_match('/^(.*)\/(' . $reg . '|zh|zh-reset)(\/.*)?$/', $tmp, $matches)) {
-			$tmp = user_trailingslashit(trailingslashit($matches[1]) . ltrim($matches[3], '/'));
-			if ($tmp == untrailingslashit(home_url(''))) {
-				$tmp .= '/';
-			}
+	public static function strip_variant(string $link): string {
+		if (!self::is_internal($link)) {
+			return $link;
 		}
-		return $tmp;
+		$link = remove_query_arg('variant', $link);
+		if (empty(Config::options()['wpcc_use_permalink'])) {
+			return $link;
+		}
+		$path = wp_parse_url($link, PHP_URL_PATH) ?: '/';
+		$base = rtrim(wp_parse_url(home_url('/'), PHP_URL_PATH) ?: '', '/');
+		$relative = substr($path, strlen($base));
+		$reg = Config::get_variant_regex();
+		if (Config::options()['wpcc_use_permalink'] === 2) {
+			$relative = preg_replace('#^/(?:' . $reg . ')(?=/|$)#', '', $relative, 1);
+		} else {
+			$relative = preg_replace('#^(.*)/(?:' . $reg . ')(?=/|$)(.*)$#', '$1$2', $relative, 1);
+		}
+		$new_path = $base . ($relative === '' ? '/' : $relative);
+		if ($new_path !== $path) {
+			$new_path = $relative === '' ? trailingslashit($new_path) : user_trailingslashit($new_path);
+			$position = strpos($link, $path, str_contains($link, '://') ? strpos($link, '://') + 3 : 0);
+			$link = substr_replace($link, $new_path, $position, strlen($path));
+		}
+		return $link;
+	}
+
+	public static function get_noconversion_url() {
+		$uri = isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+		$uri = '/' . ltrim($uri, '/');
+		$home = wp_parse_url(home_url('/'));
+		$origin = $home['scheme'] . '://' . $home['host'] . (isset($home['port']) ? ':' . $home['port'] : '');
+		return self::strip_variant($origin . $uri);
 	}
 
 	public static function pagenum_link_fix($link) {
 		global $paged;
-		$options = State::options();
+		$options = Config::options();
 		$target_lang = Context::targetLang();
 		if ($options['wpcc_use_permalink'] != 1) {
 			return $link;
@@ -87,86 +120,54 @@ class LinkService {
 	}
 
 	public static function fix_link_conversion($link) {
-		$options = State::options();
-		if ($options['wpcc_use_permalink'] == 1) {
-			if ($flag = strstr($link, '#')) {
-				$link = substr($link, 0, -strlen($flag));
-			}
-			$reg = wpcc_get_variant_regex(true);
-			if (preg_match('/^(.*\/)(' . $reg . ')\/(.+)$/', $link, $tmp)) {
-				return user_trailingslashit($tmp[1] . trailingslashit($tmp[3]) . $tmp[2]) . $flag;
-			}
-			return $link . $flag;
-		} else if ($options['wpcc_use_permalink'] == 0) {
-			if (preg_match('/^(.*)\?variant=([-a-zA-Z]+)\/(.*)$/', $link, $tmp)) {
-				return add_query_arg('variant', $tmp[2], trailingslashit($tmp[1]) . $tmp[3]);
-			}
-			return $link;
+		$mode = Config::options()['wpcc_use_permalink'];
+		$reg = Config::get_variant_regex();
+		$path = wp_parse_url($link, PHP_URL_PATH) ?: '';
+		if ($mode === 1 && preg_match('#/(' . $reg . ')(?=/|$)#', $path, $match)) {
+			return self::link_conversion(self::strip_variant($link), $match[1]);
+		}
+		if ($mode === 0 && preg_match('#^(.*)\?variant=([-a-zA-Z]+)/(.*)$#', $link, $match)) {
+			return add_query_arg('variant', $match[2], trailingslashit($match[1]) . $match[3]);
 		}
 		return $link;
 	}
 
 	public static function cancel_link_conversion($link) {
-		$options = State::options();
-		if ($options['wpcc_use_permalink']) {
-			$reg = wpcc_get_variant_regex(true);
-			if (preg_match('/^(.*\/)(' . $reg . ')\/(.+)$/', $link, $tmp)) {
-				return $tmp[1] . $tmp[3];
-			}
-			return $link;
-		}
-
-		if (preg_match('/^(.*)\?variant=[-a-zA-Z]+\/(.*)$/', $link, $tmp)) {
-			return trailingslashit($tmp[1]) . $tmp[2];
-		}
-		return $link;
+		return self::strip_variant((string) $link);
 	}
 
 	public static function cancel_incorrect_redirect($redirect_to, $redirect_from) {
-		global $wp_rewrite;
-		$reg = wpcc_get_variant_regex(true);
-		if (preg_match('/^.*\/(' . $reg . ')\/?.+$/', $redirect_to)) {
-			if (($wp_rewrite->use_trailing_slashes && substr($redirect_from, -1) != '/') ||
-				(!$wp_rewrite->use_trailing_slashes && substr($redirect_from, -1) == '/')) {
-				return user_trailingslashit($redirect_from);
-			}
-			return false;
+		if (!$redirect_to || !Context::targetLang()) {
+			return $redirect_to;
 		}
-		return $redirect_to;
+		$converted = self::link_conversion($redirect_to);
+		return $converted === $redirect_from ? false : $converted;
 	}
 
 	public static function rewrite_rules($rules) {
-		$options = State::options();
-		$reg = implode('|', $options['wpcc_used_langs']);
-		$rules2 = array();
-		if ($options['wpcc_use_permalink'] == 1) {
-			foreach ($rules as $key => $value) {
-				if (strpos($key, 'print') !== false || strpos($value, 'lang=') !== false) {
-					continue;
-				}
-				if (substr($key, -3) == '/?$') {
-					if (!preg_match_all('/\\$matches\\[(\\d+)\\]/', $value, $matches, PREG_PATTERN_ORDER)) {
-						continue;
-					}
-					$number = count($matches[0]) + 1;
-					$rules2[substr($key, 0, -3) . '/(' . $reg . '|zh|zh-reset)/?$'] = $value . '&variant=$matches[' . $number . ']';
-				}
+		$options = Config::options();
+		if (empty($options['wpcc_use_permalink']) || empty($options['wpcc_used_langs'])) {
+			return $rules;
+		}
+		$reg = Config::get_variant_regex();
+		$converted = array('^(' . $reg . ')/?$' => 'index.php?variant=$matches[1]');
+		foreach ($rules as $pattern => $query) {
+			if (str_contains($pattern, 'print') || str_contains($query, 'lang=') || str_contains($query, 'variant=') || !str_ends_with($pattern, '$')) {
+				continue;
 			}
-		} else {
-			foreach ($rules as $key => $value) {
-				if (strpos($key, 'print') !== false || strpos($value, 'lang=') !== false) {
-					continue;
-				}
-				if (substr($key, -3) == '/?$') {
-					$rules2['(' . $reg . '|zh|zh-reset)/' . $key] = preg_replace_callback('/\\$matches\\[(\\d+)\\]/', array(self::class, 'permalink_preg_callback'), $value) . '&variant=$matches[1]';
-				}
+			if ($options['wpcc_use_permalink'] === 1) {
+				preg_match("\x01(?:" . $pattern . ")|\x01", '', $captures, PREG_UNMATCHED_AS_NULL);
+				$number = count($captures);
+				$stem = str_ends_with($pattern, '/?$') ? substr($pattern, 0, -3) : rtrim(substr($pattern, 0, -1), '/');
+				$converted[$stem . '/(' . $reg . ')/?$'] = $query . '&variant=$matches[' . $number . ']';
+			} else {
+				$converted['^(' . $reg . ')/' . ltrim($pattern, '^')] = preg_replace_callback('/\\$matches\\[(\\d+)\\]/', array(self::class, 'permalink_preg_callback'), $query) . '&variant=$matches[1]';
 			}
 		}
-		$rules2['^(' . $reg . '|zh|zh-reset)/?$'] = 'index.php?variant=$matches[1]';
-		return array_merge($rules2, $rules);
+		return $converted + $rules;
 	}
 
 	public static function permalink_preg_callback($matches) {
-		return '$matches[' . (intval($matches[1]) + 1) . ']';
+		return '$matches[' . ((int) $matches[1] + 1) . ']';
 	}
 }
